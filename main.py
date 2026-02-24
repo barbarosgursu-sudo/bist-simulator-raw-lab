@@ -1,43 +1,100 @@
-import yfinance as yf
-import pandas as pd
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from fastapi import FastAPI, HTTPException
 
-# ASELS.IS sembolünü tanımlayalım
-symbol = "ASELS.IS"
+app = FastAPI(title="BIST Replay Engine - Schema Init")
 
-# Belirttiğin tarihler (Başlangıç dahil, bitiş hariç tutulur)
-# 18, 19 ve 20'yi alabilmek için bitişi 21 Şubat yapıyoruz
-start_date = "2026-02-18"
-end_date = "2026-02-21"
+def get_db_connection():
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL not found in environment")
+    return psycopg2.connect(database_url)
 
-def get_daily_closes():
-    print(f"{symbol} için günlük kapanışlar getiriliyor...")
-    
-    # 1d (günlük) periyot ile veriyi indir
-    df = yf.download(
-        symbol,
-        start=start_date,
-        end=end_date,
-        interval="1d",
-        auto_adjust=False,
-        progress=False
-    )
+@app.get("/")
+def root():
+    return {"message": "BIST Replay Engine schema service is running"}
 
-    if df.empty:
-        print("Veri bulunamadı.")
-        return
+@app.get("/health")
+def health():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1;")
+        one = cur.fetchone()
+        cur.close()
+        conn.close()
+        return {"status": "ok", "db": "connected", "result": one[0]}
+    except Exception as e:
+        return {"status": "error", "db": "not_connected", "error": str(e)}
 
-    # MultiIndex yapısını temizle
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+@app.post("/init/daily-official")
+def init_daily_official():
+    ddl = """
+    CREATE TABLE IF NOT EXISTS daily_official (
+      symbol          VARCHAR(20) NOT NULL,
+      session_date    DATE NOT NULL,
 
-    # Sadece tarih ve kapanış fiyatlarını gösterelim
-    df = df.reset_index()
-    
-    # İhtiyacımız olan sütunları seçelim
-    result = df[['Date', 'Close', 'Adj Close']]
-    
-    print("\n--- Kapanış Fiyatları ---")
-    print(result.to_string(index=False))
+      official_open   NUMERIC(18,6) NOT NULL,
+      official_close  NUMERIC(18,6) NOT NULL,
 
-if __name__ == "__main__":
-    get_daily_closes()
+      source_open     TEXT NOT NULL,
+      source_close    TEXT NOT NULL,
+
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+      PRIMARY KEY (symbol, session_date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_daily_official_date
+      ON daily_official (session_date);
+
+    CREATE OR REPLACE FUNCTION set_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = now();
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS trg_daily_official_updated_at ON daily_official;
+
+    CREATE TRIGGER trg_daily_official_updated_at
+    BEFORE UPDATE ON daily_official
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();
+    """
+
+    try:
+        conn = get_db_connection()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute(ddl)
+        cur.close()
+        conn.close()
+        return {"status": "ok", "message": "daily_official table (and trigger/index) ensured"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"init failed: {str(e)}")
+
+@app.get("/schema/daily-official")
+def describe_daily_official():
+    """Quick check: show columns if table exists."""
+    q = """
+    SELECT
+      column_name, data_type, is_nullable
+    FROM information_schema.columns
+    WHERE table_schema='public'
+      AND table_name='daily_official'
+    ORDER BY ordinal_position;
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(q)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return {"table": "daily_official", "columns": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"describe failed: {str(e)}")
