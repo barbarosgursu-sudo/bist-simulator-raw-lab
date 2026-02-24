@@ -98,3 +98,12 @@ def describe_daily_official():
         return {"table": "daily_official", "columns": rows}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"describe failed: {str(e)}")
+
+def db_info():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT current_database(), current_schema(), current_user;")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {"current_database": row[0], "current_schema": row[1], "current_user": row[2]}
