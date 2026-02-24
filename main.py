@@ -90,6 +90,58 @@ def sync_asels_final_browser():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/inspect-bars")
+def inspect_bars_asels():
+    """
+    ASELS.IS için 10:00 - 17:59 arasındaki 1m barlarının saatlik dökümünü verir.
+    """
+    symbol = "ASELS.IS"
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # SQL: Sadece ASELS.IS için saatlik gruplama yapar
+        query = """
+            SELECT 
+                EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Istanbul') AS bar_hour,
+                COUNT(*) AS bar_count
+            FROM raw_minute_bars
+            WHERE 
+                symbol = %s
+                AND (ts AT TIME ZONE 'Europe/Istanbul')::time >= '10:00:00'
+                AND (ts AT TIME ZONE 'Europe/Istanbul')::time <= '17:59:59'
+            GROUP BY bar_hour
+            ORDER BY bar_hour;
+        """
+        
+        cur.execute(query, (symbol,))
+        rows = cur.fetchall()
+        
+        total_bars = sum(row[1] for row in rows)
+        hourly_detail = []
+        
+        for row in rows:
+            hour = int(row[0])
+            count = row[1]
+            # BIST'te her saatte 60 bar (dakika) olması beklenir
+            hourly_detail.append({
+                "saat_araligi": f"{hour:02d}:00 - {hour:02d}:59",
+                "bar_sayisi": count,
+                "saglik_durumu": "Tam" if count >= 60 else f"Eksik ({60-count} bar kayıp)"
+            })
+
+        cur.close()
+        conn.close()
+        
+        return {
+            "symbol": symbol,
+            "toplam_dakikalık_bar": total_bars,
+            "saatlik_analiz": hourly_detail
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
