@@ -284,6 +284,61 @@ def fetch_asels_correct():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+Bu fonksiyonu bir FastAPI endpoint'ine dönüştürerek main.py dosyana ekledim. Fonksiyonun içindeki ts ve Europe/Istanbul kullanımı, veritabanındaki zaman damgası (timestamp) yapısına sadık kalarak hazırlandı.
+
+Bunu tarayıcıdan (Browser) kolayca görebilmen için @app.get olarak tanımladım.
+
+main.py Dosyasına Eklenecek Bölüm
+Python
+
+@app.get("/inspect-955")
+def inspect_955_closes_endpoint():
+    """
+    Veritabanındaki raw_minute_bars tablosundan 
+    Türkiye saatine göre 09:55 barlarının CLOSE değerlerini listeler.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Senin sağladığın SQL sorgusu
+        # Not: 24 Şubat hariç tutulmuştur
+        query = """
+            SELECT 
+                symbol,
+                DATE(ts AT TIME ZONE 'Europe/Istanbul') AS tr_date,
+                close
+            FROM raw_minute_bars
+            WHERE 
+                DATE(ts AT TIME ZONE 'Europe/Istanbul') <> '2026-02-24'
+                AND (ts AT TIME ZONE 'Europe/Istanbul')::time = '09:55:00'
+            ORDER BY tr_date, symbol;
+        """
+        
+        cur.execute(query)
+        rows = cur.fetchall()
+        
+        # Sonuçları JSON formatına çevirelim
+        results = []
+        for row in rows:
+            results.append({
+                "symbol": row[0],
+                "date": str(row[1]),
+                "close_at_0955": float(row[2])
+            })
+
+        cur.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "description": "09:55 bar CLOSE değerleri (TR saatiyle)",
+            "data": results
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
