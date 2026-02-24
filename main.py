@@ -116,36 +116,6 @@ def check_daily():
     except Exception as e:
         return {"error": str(e)}
 
-@app.post("/fill-daily-open")
-def fill_daily_open():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            INSERT INTO daily_official (symbol, session_date, official_open)
-            SELECT
-                symbol,
-                DATE(ts) as session_date,
-                close as official_open
-            FROM raw_minute_bars
-            WHERE EXTRACT(HOUR FROM ts) = 9
-              AND EXTRACT(MINUTE FROM ts) = 55
-            ON CONFLICT (symbol, session_date)
-            DO UPDATE SET
-                official_open = EXCLUDED.official_open,
-                updated_at = now();
-        """)
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return {"status": "daily_open_filled"}
-
-    except Exception as e:
-        return {"error": str(e)}
-
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
