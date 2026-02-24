@@ -332,7 +332,7 @@ def inspect_955_closes_endpoint():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.post("/sync-asels-final")
+@app.get("/sync-asels-final")
 def sync_asels_final():
     import yfinance as yf
     import pandas as pd
