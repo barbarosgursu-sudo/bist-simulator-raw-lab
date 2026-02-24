@@ -1,22 +1,21 @@
+import os
+import yfinance as yf
+import pandas as pd
 import psycopg2
-from psycopg2 import sql
+from datetime import datetime
 
-def setup_database():
-    # Veritabanı bağlantı bilgilerini buraya girin
-    connection_params = {
-        "host": "localhost",
-        "database": "your_db_name",
-        "user": "your_username",
-        "password": "your_password"
-    }
+# Veritabanı Bağlantı Bilgileri
+# Sunucuda (Railway vb.) DATABASE_URL veya ayrı değişkenler olarak tanımlanmalıdır.
+DB_HOST = os.getenv("DB_HOST", "localhost")
+DB_NAME = os.getenv("DB_NAME", "postgres")
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "password")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
-    try:
-        conn = psycopg2.connect(**connection_params)
-        conn.autocommit = True
-        cursor = conn.cursor()
-
-        # 1. Tabloyu Oluşturma
-        create_table_query = """
+def setup_database(cursor):
+    """Tablo, Index ve Trigger kurulumlarını yapar."""
+    # 1. Tablo Oluşturma
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS daily_official (
             symbol VARCHAR(20) NOT NULL,
             session_date DATE NOT NULL,
@@ -28,21 +27,13 @@ def setup_database():
             updated_at TIMESTAMPTZ DEFAULT now(),
             PRIMARY KEY (symbol, session_date)
         );
-        """
-        cursor.execute(create_table_query)
-        print("Tablo kontrol edildi/oluşturuldu.")
+    """)
 
-        # 2. session_date için Index Oluşturma
-        create_index_query = """
-        CREATE INDEX IF NOT EXISTS idx_daily_official_session_date 
-        ON daily_official (session_date);
-        """
-        cursor.execute(create_index_query)
-        print("Index kontrol edildi/oluşturuldu.")
+    # 2. Index Oluşturma
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_daily_official_session_date ON daily_official (session_date);")
 
-        # 3. Trigger Fonksiyonu Oluşturma
-        # (PostgreSQL'de trigger'dan önce fonksiyon tanımlanmalıdır)
-        create_function_query = """
+    # 3. Trigger ve Fonksiyon (updated_at için)
+    cursor.execute("""
         CREATE OR REPLACE FUNCTION update_updated_at_column()
         RETURNS TRIGGER AS $$
         BEGIN
@@ -50,29 +41,77 @@ def setup_database():
             RETURN NEW;
         END;
         $$ language 'plpgsql';
-        """
-        cursor.execute(create_function_query)
-
-        # 4. Trigger'ı Temizle ve Yeniden Oluştur
-        # Önce varsa sil (Drop if exists), sonra oluştur
-        drop_trigger_query = "DROP TRIGGER IF EXISTS set_updated_at ON daily_official;"
-        cursor.execute(drop_trigger_query)
-
-        create_trigger_query = """
+    """)
+    
+    cursor.execute("DROP TRIGGER IF EXISTS set_updated_at ON daily_official;")
+    cursor.execute("""
         CREATE TRIGGER set_updated_at
         BEFORE UPDATE ON daily_official
         FOR EACH ROW
         EXECUTE FUNCTION update_updated_at_column();
-        """
-        cursor.execute(create_trigger_query)
-        print("Trigger temizlendi ve yeniden oluşturuldu.")
+    """)
 
+def save_to_db(df, symbol):
+    """Veriyi veritabanına kaydeder."""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS, port=DB_PORT
+        )
+        conn.autocommit = True
+        cursor = conn.cursor()
+
+        # Tablo şemasını hazırla
+        setup_database(cursor)
+
+        # Verileri INSERT et (Conflict durumunda güncelle - Upsert)
+        for date, row in df.iterrows():
+            cursor.execute("""
+                INSERT INTO daily_official 
+                (symbol, session_date, official_open, official_close, source_open, source_close)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (symbol, session_date) 
+                DO UPDATE SET 
+                    official_open = EXCLUDED.official_open,
+                    official_close = EXCLUDED.official_close,
+                    source_open = EXCLUDED.source_open,
+                    source_close = EXCLUDED.source_close;
+            """, (
+                symbol, date.date(), 
+                float(row["Open"]), float(row["Close"]), 
+                "yfinance", "yfinance"
+            ))
+        
+        print(f"{symbol} verileri başarıyla DB'ye kaydedildi.")
         cursor.close()
         conn.close()
-        print("\nİşlem başarıyla tamamlandı.")
-
     except Exception as e:
-        print(f"Bir hata oluştu: {e}")
+        print(f"Veritabanı Hatası: {e}")
+
+def get_and_save_data():
+    symbol = "ASELS.IS"
+    start_date = "2026-02-18"
+    end_date = "2026-02-21"
+
+    print(f"{symbol} verileri çekiliyor...")
+    df = yf.download(
+        symbol,
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        auto_adjust=False,
+        progress=False
+    )
+
+    if df.empty:
+        print("Veri bulunamadı.")
+        return
+
+    # MultiIndex temizliği
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    # Veritabanına kaydet
+    save_to_db(df, symbol)
 
 if __name__ == "__main__":
-    setup_database()
+    get_and_save_data()
