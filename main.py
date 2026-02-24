@@ -72,8 +72,53 @@ def run_sql():
 
     return {"status": "ok"}
 
+@app.get("/check-daily")
+def check_daily():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # tablo var mı?
+        cur.execute("SELECT to_regclass('public.daily_official');")
+        table_exists = cur.fetchone()[0]
+
+        if table_exists is None:
+            cur.close()
+            conn.close()
+            return {"table_exists": False}
+
+        # kolonlar
+        cur.execute("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name = 'daily_official'
+            ORDER BY ordinal_position;
+        """)
+        columns = cur.fetchall()
+
+        # indexler
+        cur.execute("""
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = 'daily_official';
+        """)
+        indexes = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        return {
+            "table_exists": True,
+            "columns": columns,
+            "indexes": indexes
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+    
