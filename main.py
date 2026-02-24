@@ -160,6 +160,70 @@ def test_asels_yahoo():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/fetch-asels-history")
+def fetch_asels_history():
+    import yfinance as yf
+    import pandas as pd
+    from datetime import datetime
+
+    symbol = "ASELS.IS"
+    # 18'inden 24'üne kadar olan günleri kapsayacak aralık
+    start_date = "2026-02-18"
+    end_date = "2026-02-25" # 24'ünü dahil etmek için bir gün sonrası
+    
+    results = []
+    
+    try:
+        # 1. Günlük (1d) barları çek
+        df_1d = yf.download(symbol, start=start_date, end=end_date, interval="1d", auto_adjust=False, progress=False)
+        
+        # 2. Dakikalık (1m) barları çek (09:55'leri yakalamak için)
+        df_1m = yf.download(symbol, start=start_date, end=end_date, interval="1m", auto_adjust=False, progress=False)
+
+        # MultiIndex temizliği
+        if isinstance(df_1d.columns, pd.MultiIndex): df_1d.columns = df_1d.columns.get_level_values(0)
+        if isinstance(df_1m.columns, pd.MultiIndex): df_1m.columns = df_1m.columns.get_level_values(0)
+
+        # Tarih indexlerini düzeltme
+        df_1d.index = pd.to_datetime(df_1d.index)
+        df_1m.index = pd.to_datetime(df_1m.index)
+
+        # Belirttiğin tarihler üzerinde dönelim
+        target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
+
+        for target_date in target_dates:
+            date_obj = pd.to_datetime(target_date)
+            
+            # Kapanış Değeri (1d tablosundan o güne bak)
+            try:
+                close_val = float(df_1d.loc[df_1d.index == date_obj, 'Close'].iloc[0])
+            except:
+                close_val = "Bulunamadı (Resmi tatil veya veri eksik)"
+
+            # Açılış Değeri (1m tablosundan 09:55'e bak)
+            try:
+                # O güne ait 09:55 barını süz
+                day_1m = df_1m[df_1m.index.date == date_obj.date()]
+                opening_bar = day_1m.between_time('09:55', '09:55')
+                open_val = float(opening_bar['Open'].iloc[0])
+            except:
+                open_val = "Bulunamadı"
+
+            results.append({
+                "tarih": target_date,
+                "resmi_acilis_0955_1m_open": open_val,
+                "resmi_kapanis_1d_close": close_val
+            })
+
+        return {
+            "symbol": symbol,
+            "data": results,
+            "kaynak": "Yahoo Finance"
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
