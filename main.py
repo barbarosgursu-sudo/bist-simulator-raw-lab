@@ -8,6 +8,23 @@ def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     return psycopg2.connect(db_url)
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "bist-simulator-raw-lab"}
+
+@app.get("/db-test")
+def db_test():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1;")
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        return {"status": "connected", "db_response": result[0]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/init-table")
 def create_daily_official():
     conn = get_db_connection()
