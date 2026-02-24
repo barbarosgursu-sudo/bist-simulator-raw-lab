@@ -332,6 +332,73 @@ def inspect_955_closes_endpoint():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.post("/sync-asels-final")
+def sync_asels_final():
+    import yfinance as yf
+    import pandas as pd
+    
+    symbol = "ASELS.IS"
+    target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # 1. Kapanışları Yahoo'dan çek (1D barları)
+        df_1d = yf.download(symbol, start="2026-02-18", end="2026-02-26", interval="1d", auto_adjust=False, progress=False)
+        if isinstance(df_1d.columns, pd.MultiIndex): df_1d.columns = df_1d.columns.get_level_values(0)
+        df_1d.index = pd.to_datetime(df_1d.index)
+
+        # 2. Açılışları Veritabanından çek (09:55 barları)
+        # Senin 'inspect-955' sorgunla birebir aynı mantık
+        query_open = """
+            SELECT DATE(ts AT TIME ZONE 'Europe/Istanbul') as tr_date, close
+            FROM raw_minute_bars
+            WHERE symbol = %s 
+              AND (ts AT TIME ZONE 'Europe/Istanbul')::time = '09:55:00'
+              AND DATE(ts AT TIME ZONE 'Europe/Istanbul') IN %s;
+        """
+        cur.execute(query_open, (symbol, tuple(target_dates)))
+        db_opens = {str(row[0]): float(row[1]) for row in cur.fetchall()}
+
+        synced_count = 0
+        for t_date in target_dates:
+            # DB'den açılış fiyatını al
+            official_open = db_opens.get(t_date)
+            
+            # Yahoo'dan kapanış fiyatını al
+            try:
+                official_close = float(df_1d.loc[df_1d.index == pd.to_datetime(t_date), 'Close'].iloc[0])
+            except:
+                official_close = None
+
+            # Eğer her iki veri de varsa DB'ye kaydet
+            if official_open and official_close:
+                cur.execute("""
+                    INSERT INTO daily_official 
+                    (symbol, session_date, official_open, official_close, source_open, source_close)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (symbol, session_date) 
+                    DO UPDATE SET 
+                        official_open = EXCLUDED.official_open,
+                        official_close = EXCLUDED.official_close,
+                        updated_at = now();
+                """, (symbol, t_date, official_open, official_close, 'DB_RAW_09_55_CLOSE', 'YAHOO_1D_CLOSE'))
+                synced_count += 1
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "message": f"{symbol} için {synced_count} günün verisi başarıyla birleştirildi ve kaydedildi.",
+            "dates_processed": target_dates
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
