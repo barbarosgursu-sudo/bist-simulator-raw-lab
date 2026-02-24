@@ -116,6 +116,51 @@ def check_daily():
     except Exception as e:
         return {"error": str(e)}
 
+@app.get("/test-asels")
+def test_asels():
+    """ASELS.IS için bugün gerçekleşen 09:55 (1m) ve resmi (1d) kapanışı getirir."""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 1. Sabah 09:55 1m barının Close değerini çek
+        # Not: Senin isteğine göre Close değerini çekiyoruz.
+        cur.execute("""
+            SELECT close FROM raw_minute_bars 
+            WHERE symbol = 'ASELS.IS' 
+              AND CAST(timestamp AS DATE) = CURRENT_DATE
+              AND CAST(timestamp AS TIME) = '09:55:00'
+            LIMIT 1;
+        """)
+        open_bar_res = cur.fetchone()
+        open_val = open_bar_res[0] if open_bar_res else "Veri bulunamadı"
+
+        # 2. Bugünün resmi 1d barının Close değerini çek
+        # Interval kolonun farklıysa burayı 'period' veya 'timeframe' yapabilirsin.
+        cur.execute("""
+            SELECT close FROM raw_minute_bars 
+            WHERE symbol = 'ASELS.IS' 
+              AND CAST(timestamp AS DATE) = CURRENT_DATE
+              AND interval = '1d'
+            LIMIT 1;
+        """)
+        close_bar_res = cur.fetchone()
+        close_val = close_bar_res[0] if close_bar_res else "Veri bulunamadı"
+
+        cur.close()
+        conn.close()
+
+        return {
+            "symbol": "ASELS.IS",
+            "tarih": str(psycopg2.sql.Literal(psycopg2.extensions.AsIs('CURRENT_DATE'))), # Bugün
+            "resmi_acilis_0955_1m_close": open_val,
+            "resmi_kapanis_1d_close": close_val,
+            "bilgi": "Eğer 'Veri bulunamadı' yazıyorsa, henüz o bar veritabanına girmemiş olabilir."
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
