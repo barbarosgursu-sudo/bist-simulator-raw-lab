@@ -31,20 +31,22 @@ def ingest_raw():
 
         df = df.reset_index()
 
-        for _, row in df.iterrows():
+        records = df.to_records(index=False)
+
+        for row in records:
             cur.execute("""
                 INSERT INTO raw_minute_bars
                 (symbol, ts, open, high, low, close, adj_close, volume, source_timezone)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
                 symbol,
-                row["Datetime"].to_pydatetime() if pd.notna(row["Datetime"]) else None,
-                float(row["Open"]) if pd.notna(row["Open"]) else None,
-                float(row["High"]) if pd.notna(row["High"]) else None,
-                float(row["Low"]) if pd.notna(row["Low"]) else None,
-                float(row["Close"]) if pd.notna(row["Close"]) else None,
-                float(row["Adj Close"]) if "Adj Close" in df.columns and pd.notna(row.get("Adj Close")) else None,
-                int(row["Volume"]) if pd.notna(row["Volume"]) else None,
+                row.Datetime,
+                float(row.Open) if pd.notna(row.Open) else None,
+                float(row.High) if pd.notna(row.High) else None,
+                float(row.Low) if pd.notna(row.Low) else None,
+                float(row.Close) if pd.notna(row.Close) else None,
+                float(row._asdict().get("Adj Close")) if "Adj Close" in df.columns and pd.notna(row._asdict().get("Adj Close")) else None,
+                int(row.Volume) if pd.notna(row.Volume) else None,
                 "YAHOO"
             ))
 
