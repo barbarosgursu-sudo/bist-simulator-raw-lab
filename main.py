@@ -1,9 +1,16 @@
 import os
 import psycopg2
+from fastapi import FastAPI
 
-def create_daily_official():
+app = FastAPI()
+
+def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
-    conn = psycopg2.connect(db_url)
+    return psycopg2.connect(db_url)
+
+@app.post("/init-table")
+def create_daily_official():
+    conn = get_db_connection()
     cur = conn.cursor()
 
     cur.execute("""
@@ -22,7 +29,8 @@ def create_daily_official():
     conn.commit()
     cur.close()
     conn.close()
-    print("daily_official table ready")
+
+    return {"status": "table_ready"}
 
 @app.post("/run-sql")
 def run_sql():
@@ -46,6 +54,3 @@ def run_sql():
     conn.close()
 
     return {"status": "ok"}
-
-if __name__ == "__main__":
-    create_daily_official()
