@@ -24,5 +24,28 @@ def create_daily_official():
     conn.close()
     print("daily_official table ready")
 
+@app.post("/run-sql")
+def run_sql():
+    sql = """
+    ALTER TABLE daily_official
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
+    ALTER TABLE daily_official
+      ALTER COLUMN official_open TYPE NUMERIC(18,6),
+      ALTER COLUMN official_close TYPE NUMERIC(18,6);
+
+    CREATE INDEX IF NOT EXISTS idx_daily_official_date
+      ON daily_official(session_date);
+    """
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(sql)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"status": "ok"}
+
 if __name__ == "__main__":
     create_daily_official()
