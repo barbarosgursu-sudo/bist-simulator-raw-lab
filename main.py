@@ -1,32 +1,35 @@
-import os
-import psycopg2
+import yfinance as yf
+import pandas as pd
 
-def inspect_asels_closing_bar():
-    db_url = os.getenv("DATABASE_URL")
-    conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
+def check_after_hours():
+    print("\nASELS.IS extended test (prepost=True)\n")
 
-    print("\nASELS günlük son bar (24 hariç, TR):\n")
+    df = yf.download(
+        "ASELS.IS",
+        period="2d",        # yeterli
+        interval="1m",
+        auto_adjust=False,
+        prepost=True,       # kritik
+        progress=False
+    )
 
-    cur.execute("""
-        SELECT DISTINCT ON (DATE(ts AT TIME ZONE 'Europe/Istanbul'))
-            DATE(ts AT TIME ZONE 'Europe/Istanbul') AS tr_date,
-            (ts AT TIME ZONE 'Europe/Istanbul') AS tr_time,
-            close,
-            volume
-        FROM raw_minute_bars
-        WHERE symbol = 'ASELS.IS'
-          AND DATE(ts AT TIME ZONE 'Europe/Istanbul') <> '2026-02-24'
-        ORDER BY 
-            DATE(ts AT TIME ZONE 'Europe/Istanbul'),
-            ts DESC;
-    """)
+    if df.empty:
+        print("No data returned.")
+        return
 
-    for row in cur.fetchall():
-        print(row)
+    df = df.reset_index()
 
-    cur.close()
-    conn.close()
+    # TR saatine çevir
+    df["TR_Time"] = df["Datetime"].dt.tz_convert("Europe/Istanbul")
+
+    # 17:59 sonrası barlar
+    after = df[df["TR_Time"].dt.time > pd.to_datetime("17:59:00").time()]
+
+    print("Toplam bar:", len(df))
+    print("En geç saat:", df["TR_Time"].max())
+
+    print("\n17:59 sonrası barlar:")
+    print(after[["TR_Time", "Open", "High", "Low", "Close", "Volume"]])
 
 if __name__ == "__main__":
-    inspect_asels_closing_bar()
+    check_after_hours()
