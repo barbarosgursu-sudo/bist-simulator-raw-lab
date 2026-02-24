@@ -1,35 +1,18 @@
 import yfinance as yf
-import pandas as pd
 
-def check_after_hours():
-    print("\nASELS.IS extended test (prepost=True)\n")
-
+def get_daily_close():
     df = yf.download(
         "ASELS.IS",
-        period="2d",        # yeterli
-        interval="1m",
+        period="7d",
+        interval="1d",
         auto_adjust=False,
-        prepost=True,       # kritik
         progress=False
     )
 
-    if df.empty:
-        print("No data returned.")
-        return
+    print("\nASELS.IS 1D Close değerleri:\n")
 
-    df = df.reset_index()
-
-    # TR saatine çevir
-    df["TR_Time"] = df["Datetime"].dt.tz_convert("Europe/Istanbul")
-
-    # 17:59 sonrası barlar
-    after = df[df["TR_Time"].dt.time > pd.to_datetime("17:59:00").time()]
-
-    print("Toplam bar:", len(df))
-    print("En geç saat:", df["TR_Time"].max())
-
-    print("\n17:59 sonrası barlar:")
-    print(after[["TR_Time", "Open", "High", "Low", "Close", "Volume"]])
+    for date, row in df.iterrows():
+        print(date.date(), float(row["Close"]))
 
 if __name__ == "__main__":
-    check_after_hours()
+    get_daily_close()
