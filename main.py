@@ -90,53 +90,66 @@ def sync_asels_final_browser():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/inspect-bars")
-def inspect_bars_asels():
+@app.get("/inspect-bars-comparison")
+def inspect_bars_comparison():
     """
-    ASELS.IS için 10:00 - 17:59 arasındaki 1m barlarının saatlik dökümünü verir.
+    ASELS.IS için 18-24 Şubat arası, her günün saatlik bar sayılarını karşılaştırır.
     """
     symbol = "ASELS.IS"
+    target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
+    
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # SQL: Sadece ASELS.IS için saatlik gruplama yapar
+        # SQL: Gün ve Saat bazlı gruplama
         query = """
             SELECT 
+                DATE(ts AT TIME ZONE 'Europe/Istanbul') AS tr_date,
                 EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Istanbul') AS bar_hour,
                 COUNT(*) AS bar_count
             FROM raw_minute_bars
             WHERE 
                 symbol = %s
+                AND DATE(ts AT TIME ZONE 'Europe/Istanbul') IN %s
                 AND (ts AT TIME ZONE 'Europe/Istanbul')::time >= '10:00:00'
                 AND (ts AT TIME ZONE 'Europe/Istanbul')::time <= '17:59:59'
-            GROUP BY bar_hour
-            ORDER BY bar_hour;
+            GROUP BY tr_date, bar_hour
+            ORDER BY tr_date DESC, bar_hour ASC;
         """
         
-        cur.execute(query, (symbol,))
+        cur.execute(query, (symbol, tuple(target_dates)))
         rows = cur.fetchall()
         
-        total_bars = sum(row[1] for row in rows)
-        hourly_detail = []
-        
+        # Veriyi yapılandıralım: { "2026-02-24": { 10: 60, 11: 58 ... } }
+        comparison_table = {}
         for row in rows:
-            hour = int(row[0])
-            count = row[1]
-            # BIST'te her saatte 60 bar (dakika) olması beklenir
-            hourly_detail.append({
-                "saat_araligi": f"{hour:02d}:00 - {hour:02d}:59",
-                "bar_sayisi": count,
-                "saglik_durumu": "Tam" if count >= 60 else f"Eksik ({60-count} bar kayıp)"
-            })
+            d_str = str(row[0])
+            hour = int(row[1])
+            count = row[2]
+            
+            if d_str not in comparison_table:
+                comparison_table[d_str] = {}
+            comparison_table[d_str][hour] = count
 
         cur.close()
         conn.close()
         
+        # Browser'da daha rahat okumak için listeye çeviriyoruz
+        final_list = []
+        for hour in range(10, 18):
+            hour_str = f"{hour:02d}:00 - {hour:02d}:59"
+            row_data = {"saat": hour_str}
+            for d in target_dates:
+                # O gün ve o saatte kaç bar var? Yoksa 0 yaz.
+                row_data[d] = comparison_table.get(d, {}).get(hour, 0)
+            final_list.append(row_data)
+
         return {
             "symbol": symbol,
-            "toplam_dakikalık_bar": total_bars,
-            "saatlik_analiz": hourly_detail
+            "analiz_tipi": "Gunluk Karsilastirmali Bar Sayilari",
+            "not": "Her hucrede 60 rakami gorunmelidir.",
+            "data": final_list
         }
 
     except Exception as e:
