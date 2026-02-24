@@ -284,13 +284,6 @@ def fetch_asels_correct():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-Bu fonksiyonu bir FastAPI endpoint'ine dönüştürerek main.py dosyana ekledim. Fonksiyonun içindeki ts ve Europe/Istanbul kullanımı, veritabanındaki zaman damgası (timestamp) yapısına sadık kalarak hazırlandı.
-
-Bunu tarayıcıdan (Browser) kolayca görebilmen için @app.get olarak tanımladım.
-
-main.py Dosyasına Eklenecek Bölüm
-Python
-
 @app.get("/inspect-955")
 def inspect_955_closes_endpoint():
     """
