@@ -1,30 +1,58 @@
 import os
 import psycopg2
+import yfinance as yf
+import pandas as pd
+from datetime import datetime
 
-def create_raw_table():
+SYMBOLS = [
+    "ASELS.IS",
+    "THYAO.IS",
+    "SISE.IS"
+]
+
+def ingest_raw():
     db_url = os.getenv("DATABASE_URL")
     conn = psycopg2.connect(db_url)
     cur = conn.cursor()
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS raw_minute_bars (
-            symbol TEXT,
-            ts TIMESTAMPTZ,
-            open NUMERIC,
-            high NUMERIC,
-            low NUMERIC,
-            close NUMERIC,
-            adj_close NUMERIC,
-            volume BIGINT,
-            source_timezone TEXT,
-            fetch_time TIMESTAMPTZ DEFAULT now()
-        );
-    """)
+    for symbol in SYMBOLS:
+        print(f"Fetching {symbol}")
+        df = yf.download(
+            symbol,
+            period="5d",
+            interval="1m",
+            auto_adjust=False,
+            progress=False
+        )
 
-    conn.commit()
+        if df.empty:
+            print(f"No data for {symbol}")
+            continue
+
+        df = df.reset_index()
+
+        for _, row in df.iterrows():
+            cur.execute("""
+                INSERT INTO raw_minute_bars
+                (symbol, ts, open, high, low, close, adj_close, volume, source_timezone)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                symbol,
+                row["Datetime"],
+                row["Open"],
+                row["High"],
+                row["Low"],
+                row["Close"],
+                row.get("Adj Close", None),
+                row["Volume"],
+                "YAHOO"
+            ))
+
+        conn.commit()
+
     cur.close()
     conn.close()
-    print("raw_minute_bars table ready")
+    print("INGEST DONE")
 
 if __name__ == "__main__":
-    create_raw_table()
+    ingest_raw()
