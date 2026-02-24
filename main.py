@@ -116,46 +116,45 @@ def check_daily():
     except Exception as e:
         return {"error": str(e)}
 
-@app.get("/test-asels")
-def test_asels():
-    """ASELS.IS için bugün gerçekleşen 09:55 (1m) ve resmi (1d) kapanışı getirir."""
+@app.get("/test-asels-yahoo")
+def test_asels_yahoo():
+    import yfinance as yf
+    import pandas as pd
+    from datetime import datetime
+
+    symbol = "ASELS.IS"
+    
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # 1. Resmi Kapanış (1d) verisini çek
+        df_1d = yf.download(symbol, period="1d", interval="1d", auto_adjust=False, progress=False)
+        
+        # 2. Resmi Açılış (09:55 1m) verisini çek
+        # Not: Bugünün verisini almak için 7 günlük çekip içinden bugünü süzmek en sağlıklısıdır
+        df_1m = yf.download(symbol, period="1d", interval="1m", auto_adjust=False, progress=False)
 
-        # 1. Sabah 09:55 1m barının Close değerini çek
-        # Not: Senin isteğine göre Close değerini çekiyoruz.
-        cur.execute("""
-            SELECT close FROM raw_minute_bars 
-            WHERE symbol = 'ASELS.IS' 
-              AND CAST(timestamp AS DATE) = CURRENT_DATE
-              AND CAST(timestamp AS TIME) = '09:55:00'
-            LIMIT 1;
-        """)
-        open_bar_res = cur.fetchone()
-        open_val = open_bar_res[0] if open_bar_res else "Veri bulunamadı"
+        # MultiIndex temizliği
+        if isinstance(df_1d.columns, pd.MultiIndex): df_1d.columns = df_1d.columns.get_level_values(0)
+        if isinstance(df_1m.columns, pd.MultiIndex): df_1m.columns = df_1m.columns.get_level_values(0)
 
-        # 2. Bugünün resmi 1d barının Close değerini çek
-        # Interval kolonun farklıysa burayı 'period' veya 'timeframe' yapabilirsin.
-        cur.execute("""
-            SELECT close FROM raw_minute_bars 
-            WHERE symbol = 'ASELS.IS' 
-              AND CAST(timestamp AS DATE) = CURRENT_DATE
-              AND interval = '1d'
-            LIMIT 1;
-        """)
-        close_bar_res = cur.fetchone()
-        close_val = close_bar_res[0] if close_bar_res else "Veri bulunamadı"
+        # 1D Kapanış Değeri
+        official_close = float(df_1d['Close'].iloc[-1]) if not df_1d.empty else "Bulunamadı"
 
-        cur.close()
-        conn.close()
+        # 09:55 1m Açılış Değeri (Bugün içindeki 09:55 barını bul)
+        official_open = "Bulunamadı"
+        if not df_1m.empty:
+            # Index'i datetime'a çevir ve 09:55'i süz
+            df_1m.index = pd.to_datetime(df_1m.index)
+            opening_bar = df_1m.between_time('09:55', '09:55')
+            if not opening_bar.empty:
+                official_open = float(opening_bar['Open'].iloc[0])
 
         return {
-            "symbol": "ASELS.IS",
-            "tarih": str(psycopg2.sql.Literal(psycopg2.extensions.AsIs('CURRENT_DATE'))), # Bugün
-            "resmi_acilis_0955_1m_close": open_val,
-            "resmi_kapanis_1d_close": close_val,
-            "bilgi": "Eğer 'Veri bulunamadı' yazıyorsa, henüz o bar veritabanına girmemiş olabilir."
+            "kaynak": "Yahoo Finance",
+            "symbol": symbol,
+            "tarih": datetime.now().strftime("%Y-%m-%d"),
+            "resmi_acilis_0955_1m_open": official_open,
+            "resmi_kapanis_1d_close": official_close,
+            "not": "Eğer değerler 'Bulunamadı' ise seans henüz o saate ulaşmamış veya Yahoo veriyi geciktiriyor olabilir."
         }
 
     except Exception as e:
