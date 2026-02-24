@@ -224,6 +224,66 @@ def fetch_asels_history():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/fetch-asels-correct")
+def fetch_asels_correct():
+    import yfinance as yf
+    import pandas as pd
+
+    symbol = "ASELS.IS"
+    start_date = "2026-02-18"
+    end_date = "2026-02-25"
+    
+    results = []
+    
+    try:
+        # 1. 1d verisini çek (Kapanış için)
+        df_1d = yf.download(symbol, start=start_date, end=end_date, interval="1d", auto_adjust=False, progress=False)
+        
+        # 2. 1m verisini çek (09:55 barı için)
+        df_1m = yf.download(symbol, start=start_date, end=end_date, interval="1m", auto_adjust=False, progress=False)
+
+        if isinstance(df_1d.columns, pd.MultiIndex): df_1d.columns = df_1d.columns.get_level_values(0)
+        if isinstance(df_1m.columns, pd.MultiIndex): df_1m.columns = df_1m.columns.get_level_values(0)
+
+        df_1d.index = pd.to_datetime(df_1d.index)
+        df_1m.index = pd.to_datetime(df_1m.index)
+
+        target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
+
+        for target_date in target_dates:
+            date_obj = pd.to_datetime(target_date)
+            
+            # Kapanış: 1d barının Close değeri
+            try:
+                final_close = float(df_1d.loc[df_1d.index == date_obj, 'Close'].iloc[0])
+            except:
+                final_close = None
+
+            # Açılış: 09:55 1m barının CLOSE değeri (Senin paylaştığın koddaki doğru mantık)
+            try:
+                day_1m = df_1m[df_1m.index.date == date_obj.date()]
+                opening_bar = day_1m.between_time('09:55', '09:55')
+                # DİKKAT: Burası artık .open değil, .close
+                official_open = float(opening_bar['Close'].iloc[0])
+            except:
+                official_open = None
+
+            if final_close and official_open:
+                results.append({
+                    "tarih": target_date,
+                    "resmi_acilis_0955_1m_close": official_open,
+                    "resmi_kapanis_1d_close": final_close
+                })
+
+        return {
+            "symbol": symbol,
+            "data": results,
+            "mantik": "Acilis=09:55_1m_Close, Kapanis=1d_Close"
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     # Railway PORT değişkenini otomatik atar, yerelde 8000 varsayılan olur
