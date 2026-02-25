@@ -5,7 +5,7 @@ import yfinance as yf
 import pandas as pd
 import pytz
 from fastapi import FastAPI
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
@@ -15,75 +15,38 @@ PILOT_SYMBOLS = ["THYAO.IS", "ASELS.IS", "AKBNK.IS", "BRKSN.IS", "VANGD.IS"]
 
 
 def get_db_connection():
-    db_url = os.getenv("DATABASE_URL")
-    return psycopg2.connect(db_url)
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "bse-pilot-ingest"}
-
-
-@app.get("/db-test")
-def db_test():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT 1;")
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        return {"status": "connected", "db_response": result[0]}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 
 # -------------------------------------------------------
-# RAW TABLE INIT
+# UTIL: Son 5 TAM işlem günü hesapla (bugün hariç)
 # -------------------------------------------------------
 
-@app.get("/init-raw-minute-bars-v2")
-def init_raw_minute_bars_v2():
+def get_last_5_complete_trading_days():
+    today_tr = datetime.now(TR_TZ).date()
+    d = today_tr - timedelta(days=1)
+
+    trading_days = []
+
+    while len(trading_days) < 5:
+        if d.weekday() < 5:  # 0-4 = Mon-Fri
+            trading_days.append(d)
+        d -= timedelta(days=1)
+
+    trading_days.sort()
+    return trading_days
+
+
+# -------------------------------------------------------
+# RESET
+# -------------------------------------------------------
+
+@app.get("/reset-all-data")
+def reset_all_data():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-
-        cur.execute("DROP TABLE IF EXISTS raw_minute_bars;")
-
-        cur.execute("""
-            CREATE TABLE raw_minute_bars (
-                symbol TEXT NOT NULL,
-                ts TIMESTAMPTZ NOT NULL,
-                session_date DATE NOT NULL,
-                minute_index SMALLINT NOT NULL CHECK (minute_index BETWEEN 1 AND 480),
-                open NUMERIC(12,4) NOT NULL,
-                high NUMERIC(12,4) NOT NULL,
-                low NUMERIC(12,4) NOT NULL,
-                close NUMERIC(12,4) NOT NULL,
-                adj_close NUMERIC(12,4) NOT NULL,
-                volume BIGINT NOT NULL,
-                PRIMARY KEY (symbol, session_date, minute_index)
-            );
-        """)
-
-        cur.execute("CREATE INDEX idx_rmb_session_date ON raw_minute_bars(session_date);")
-        cur.execute("CREATE INDEX idx_rmb_symbol_session_date ON raw_minute_bars(symbol, session_date);")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return {"status": "success"}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-@app.get("/reset-daily-official")
-def reset_daily_official():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE raw_minute_bars;")
         cur.execute("TRUNCATE TABLE daily_official;")
         conn.commit()
         cur.close()
@@ -94,26 +57,37 @@ def reset_daily_official():
 
 
 # -------------------------------------------------------
-# PILOT INGEST
+# PILOT INGEST (OTOMATİK 5 TAM GÜN)
 # -------------------------------------------------------
 
 @app.get("/pilot-ingest-v2")
-def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
+def pilot_ingest_v2(ca_threshold: float = 0.02):
+
     if os.getenv("DATASET_LOCKED", "0") == "1":
         return {"status": "blocked", "message": "dataset locked"}
 
     try:
+        trading_days = get_last_5_complete_trading_days()
+
+        start = trading_days[0]
+        end = trading_days[-1] + timedelta(days=1)
+
         conn = get_db_connection()
         conn.autocommit = False
-
-        start_date = datetime.strptime(start, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end, "%Y-%m-%d").date()
 
         summary = []
 
         for symbol in PILOT_SYMBOLS:
 
-            df_1m = yf.download(symbol, start=start, end=end, interval="1m", auto_adjust=False, progress=False)
+            df_1m = yf.download(
+                symbol,
+                start=str(start),
+                end=str(end),
+                interval="1m",
+                auto_adjust=False,
+                progress=False
+            )
+
             if isinstance(df_1m.columns, pd.MultiIndex):
                 df_1m.columns = df_1m.columns.get_level_values(0)
 
@@ -126,6 +100,7 @@ def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
 
             df_1m = df_1m.tz_convert(TR_TZ)
 
+            # Seans filtresi
             df_1m = df_1m.between_time("10:00", "17:59")
 
             df_1m["minute_index"] = ((df_1m.index.hour - 10) * 60 + df_1m.index.minute) + 1
@@ -133,6 +108,7 @@ def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
 
             df_1m = df_1m[(df_1m["minute_index"] >= 1) & (df_1m["minute_index"] <= 480)]
 
+            # CA detection
             if "Adj Close" in df_1m.columns:
                 ratio = ((df_1m["Close"] - df_1m["Adj Close"]).abs() / df_1m["Close"]).max()
                 if ratio > ca_threshold:
@@ -166,12 +142,21 @@ def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
             with conn.cursor() as cur:
                 psycopg2.extras.execute_values(cur, insert_sql, rows, page_size=5000)
 
-            # Daily official
-            df_1d = yf.download(symbol, start=start, end=end, interval="1d", auto_adjust=False, progress=False)
+            # daily_official
+            df_1d = yf.download(
+                symbol,
+                start=str(start),
+                end=str(end),
+                interval="1d",
+                auto_adjust=False,
+                progress=False
+            )
+
             if isinstance(df_1d.columns, pd.MultiIndex):
                 df_1d.columns = df_1d.columns.get_level_values(0)
 
             daily_rows = []
+
             for idx in df_1d.index:
                 d = pd.to_datetime(idx).date()
                 daily_rows.append((
@@ -204,7 +189,11 @@ def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
         conn.commit()
         conn.close()
 
-        return {"status": "success", "summary": summary}
+        return {
+            "status": "success",
+            "trading_days": trading_days,
+            "summary": summary
+        }
 
     except Exception as e:
         try:
@@ -214,6 +203,10 @@ def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
             pass
         return {"status": "error", "message": str(e)}
 
+
+# -------------------------------------------------------
+# HEALTH REPORT
+# -------------------------------------------------------
 
 @app.get("/data-health-report")
 def data_health_report():
@@ -227,6 +220,7 @@ def data_health_report():
             GROUP BY symbol, session_date
             ORDER BY session_date DESC, symbol;
         """)
+
         stats = cur.fetchall()
 
         cur.close()
@@ -237,23 +231,6 @@ def data_health_report():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/reset-all-data")
-def reset_all_data():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        cur.execute("TRUNCATE TABLE raw_minute_bars;")
-        cur.execute("TRUNCATE TABLE daily_official;")
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return {"status": "success", "message": "all data truncated"}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
