@@ -263,6 +263,57 @@ def inspect_daily_official_schema():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/init-raw-minute-bars-v2")
+def init_raw_minute_bars_v2():
+    """
+    raw_minute_bars tablosunu v2.0 LOCKED şemaya göre sıfırdan oluşturur.
+    UYARI: Mevcut tabloyu DROP eder.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # 1️⃣ Drop eski tablo
+        cur.execute("DROP TABLE IF EXISTS raw_minute_bars;")
+
+        # 2️⃣ Yeni tablo oluştur
+        cur.execute("""
+            CREATE TABLE raw_minute_bars (
+                symbol TEXT NOT NULL,
+                ts TIMESTAMPTZ NOT NULL,
+                session_date DATE NOT NULL,
+                minute_index SMALLINT NOT NULL CHECK (minute_index BETWEEN 1 AND 480),
+                open NUMERIC(12,4) NOT NULL,
+                high NUMERIC(12,4) NOT NULL,
+                low NUMERIC(12,4) NOT NULL,
+                close NUMERIC(12,4) NOT NULL,
+                adj_close NUMERIC(12,4) NOT NULL,
+                volume BIGINT NOT NULL,
+
+                PRIMARY KEY (symbol, session_date, minute_index)
+            );
+        """)
+
+        # 3️⃣ Indexler
+        cur.execute("""
+            CREATE INDEX idx_rmb_session_date
+            ON raw_minute_bars(session_date);
+        """)
+
+        cur.execute("""
+            CREATE INDEX idx_rmb_symbol_session_date
+            ON raw_minute_bars(symbol, session_date);
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {"status": "success", "message": "raw_minute_bars v2.0 initialized"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
