@@ -411,6 +411,111 @@ def fetch_raw_preview(symbol: str, start_date: str, end_date: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/gap-impact-analysis")
+def gap_impact_analysis(symbol: str, session_date: str):
+    """
+    Belirli bir sembol ve gün için:
+    - Eksik minute_index bloklarını bulur
+    - Her blok için:
+        - Öncesindeki son close
+        - Sonrasındaki ilk open
+        - Yüzde değişim
+    raporlar
+    """
+
+    try:
+        d = datetime.strptime(session_date, "%Y-%m-%d").date()
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT minute_index, open, close
+            FROM raw_minute_bars
+            WHERE symbol = %s AND session_date = %s
+            ORDER BY minute_index;
+        """, (symbol, d))
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            return {"status": "error", "message": "No data found"}
+
+        existing_minutes = [r[0] for r in rows]
+        data_map = {r[0]: {"open": float(r[1]), "close": float(r[2])} for r in rows}
+
+        full_set = set(range(1, 481))
+        missing = sorted(list(full_set - set(existing_minutes)))
+
+        if not missing:
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "session_date": session_date,
+                "message": "No gaps detected"
+            }
+
+        # Eksik blokları grupla
+        gap_blocks = []
+        block_start = missing[0]
+        prev = missing[0]
+
+        for mi in missing[1:]:
+            if mi == prev + 1:
+                prev = mi
+            else:
+                gap_blocks.append((block_start, prev))
+                block_start = mi
+                prev = mi
+
+        gap_blocks.append((block_start, prev))
+
+        results = []
+
+        for start, end in gap_blocks:
+            before_minute = start - 1
+            after_minute = end + 1
+
+            if before_minute in data_map and after_minute in data_map:
+                last_close = data_map[before_minute]["close"]
+                next_open = data_map[after_minute]["open"]
+
+                gap_return = (next_open - last_close) / last_close
+
+                results.append({
+                    "missing_range": f"{start}-{end}",
+                    "missing_tr_time_start": minute_to_time(start),
+                    "missing_tr_time_end": minute_to_time(end),
+                    "last_close_before_gap": last_close,
+                    "next_open_after_gap": next_open,
+                    "gap_return_percent": round(gap_return * 100, 4)
+                })
+            else:
+                results.append({
+                    "missing_range": f"{start}-{end}",
+                    "note": "Gap at session boundary or insufficient data"
+                })
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "session_date": session_date,
+            "gap_count": len(results),
+            "details": results
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def minute_to_time(minute_index: int):
+    total_minutes = minute_index - 1
+    hour = 10 + (total_minutes // 60)
+    minute = total_minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
