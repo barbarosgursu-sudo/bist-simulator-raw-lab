@@ -282,6 +282,66 @@ def missing_minutes(symbol: str, session_date: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/dataset-quality-report")
+def dataset_quality_report():
+    """
+    Tüm semboller ve session_date'ler için
+    missing minute_index kontrolü yapar.
+    Engine'e uygunluk raporu üretir.
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Tüm symbol + session_date kombinasyonlarını al
+        cur.execute("""
+            SELECT DISTINCT symbol, session_date
+            FROM raw_minute_bars
+            ORDER BY symbol, session_date;
+        """)
+        rows = cur.fetchall()
+
+        report = []
+
+        for symbol, session_date in rows:
+
+            # O günkü mevcut minute_index'leri al
+            cur.execute("""
+                SELECT minute_index
+                FROM raw_minute_bars
+                WHERE symbol = %s AND session_date = %s;
+            """, (symbol, session_date))
+
+            existing = {r[0] for r in cur.fetchall()}
+            full_set = set(range(1, 481))
+            missing_count = len(full_set - existing)
+
+            report.append({
+                "symbol": symbol,
+                "session_date": str(session_date),
+                "existing_count": len(existing),
+                "missing_count": missing_count,
+                "usable_for_engine": missing_count == 0
+            })
+
+        cur.close()
+        conn.close()
+
+        # Özet
+        usable_days = sum(1 for r in report if r["usable_for_engine"])
+        total_days = len(report)
+
+        return {
+            "status": "ok",
+            "total_symbol_days": total_days,
+            "usable_symbol_days": usable_days,
+            "rejected_symbol_days": total_days - usable_days,
+            "details": report
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
