@@ -155,6 +155,114 @@ def inspect_bars_comparison():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/schema/raw-minute-bars")
+def inspect_raw_minute_bars_schema():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Columns
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'raw_minute_bars'
+            ORDER BY ordinal_position;
+        """)
+        columns = cur.fetchall()
+
+        # Primary Key
+        cur.execute("""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+            WHERE tc.table_name = 'raw_minute_bars'
+              AND tc.constraint_type = 'PRIMARY KEY';
+        """)
+        pk = cur.fetchall()
+
+        # Constraints (CHECK dahil)
+        cur.execute("""
+            SELECT conname, pg_get_constraintdef(c.oid)
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'raw_minute_bars';
+        """)
+        constraints = cur.fetchall()
+
+        # Indexler
+        cur.execute("""
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE tablename = 'raw_minute_bars';
+        """)
+        indexes = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        return {
+            "columns": columns,
+            "primary_key": pk,
+            "constraints": constraints,
+            "indexes": indexes
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/schema/daily-official")
+def inspect_daily_official_schema():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_name = 'daily_official'
+            ORDER BY ordinal_position;
+        """)
+        columns = cur.fetchall()
+
+        cur.execute("""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+            WHERE tc.table_name = 'daily_official'
+              AND tc.constraint_type = 'PRIMARY KEY';
+        """)
+        pk = cur.fetchall()
+
+        cur.execute("""
+            SELECT conname, pg_get_constraintdef(c.oid)
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            WHERE t.relname = 'daily_official';
+        """)
+        constraints = cur.fetchall()
+
+        cur.execute("""
+            SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE tablename = 'daily_official';
+        """)
+        indexes = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        return {
+            "columns": columns,
+            "primary_key": pk,
+            "constraints": constraints,
+            "indexes": indexes
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
