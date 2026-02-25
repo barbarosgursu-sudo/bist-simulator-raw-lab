@@ -231,6 +231,56 @@ def data_health_report():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/missing-minutes")
+def missing_minutes(symbol: str, session_date: str):
+    """
+    Eksik minute_index listesini döndürür.
+    Örn:
+    /missing-minutes?symbol=THYAO.IS&session_date=2026-02-19
+    """
+    try:
+        # session_date parse
+        d = datetime.strptime(session_date, "%Y-%m-%d").date()
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT minute_index
+            FROM raw_minute_bars
+            WHERE symbol = %s AND session_date = %s
+            ORDER BY minute_index;
+        """, (symbol, d))
+
+        existing = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+
+        existing_set = set(existing)
+        full_set = set(range(1, 481))
+        missing = sorted(list(full_set - existing_set))
+
+        # Eksik minute_index'leri TR saate çevir
+        # minute_index 1 = 10:00, 480 = 17:59
+        missing_tr_times = []
+        for mi in missing:
+            total_minutes = mi - 1
+            hour = 10 + (total_minutes // 60)
+            minute = total_minutes % 60
+            missing_tr_times.append(f"{hour:02d}:{minute:02d}")
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "session_date": session_date,
+            "existing_count": len(existing),
+            "missing_count": len(missing),
+            "missing_minute_index": missing,
+            "missing_tr_times": missing_tr_times
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
