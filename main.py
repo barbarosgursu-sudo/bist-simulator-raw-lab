@@ -342,6 +342,75 @@ def dataset_quality_report():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/fetch-raw-preview")
+def fetch_raw_preview(symbol: str, start_date: str, end_date: str):
+    """
+    Yahoo'dan 1m veriyi tekrar çeker.
+    DB'ye yazmaz.
+    Sadece bar sayısı ve minute_index dağılımını raporlar.
+    """
+
+    try:
+        df = yf.download(
+            symbol,
+            start=start_date,
+            end=end_date,
+            interval="1m",
+            auto_adjust=False,
+            progress=False
+        )
+
+        if df.empty:
+            return {"status": "error", "message": "No data returned from Yahoo"}
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.index = pd.to_datetime(df.index)
+        df = df.tz_convert("Europe/Istanbul")
+
+        # Seans filtresi
+        df = df.between_time("10:00", "17:59")
+
+        # session_date üret
+        df["session_date"] = df.index.date
+
+        # minute_index üret
+        df["minute_index"] = (
+            ((df.index.hour - 10) * 60) + df.index.minute + 1
+        )
+
+        # 1–480 filtre
+        df = df[(df["minute_index"] >= 1) & (df["minute_index"] <= 480)]
+
+        report = []
+
+        grouped = df.groupby("session_date")
+
+        for session_date, group in grouped:
+            existing = set(group["minute_index"].tolist())
+            full_set = set(range(1, 481))
+            missing = sorted(list(full_set - existing))
+
+            report.append({
+                "session_date": str(session_date),
+                "bar_count": len(group),
+                "min_minute_index": min(existing) if existing else None,
+                "max_minute_index": max(existing) if existing else None,
+                "missing_count": len(missing)
+            })
+
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "start_date": start_date,
+            "end_date": end_date,
+            "summary": report
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
