@@ -1,19 +1,28 @@
 import os
 import psycopg2
+import psycopg2.extras
 import yfinance as yf
 import pandas as pd
+import pytz
 from fastapi import FastAPI
 from datetime import datetime
 
 app = FastAPI()
 
+TR_TZ = pytz.timezone("Europe/Istanbul")
+
+PILOT_SYMBOLS = ["THYAO.IS", "ASELS.IS", "AKBNK.IS", "BRKSN.IS", "VANGD.IS"]
+
+
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     return psycopg2.connect(db_url)
 
+
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "bist-simulator-raw-lab"}
+    return {"status": "ok", "service": "bse-pilot-ingest"}
+
 
 @app.get("/db-test")
 def db_test():
@@ -28,255 +37,19 @@ def db_test():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@app.get("/sync-asels-final")
-def sync_asels_final_browser():
-    """
-    ASELS.IS verilerini birleştirir ve sadece tarayıcıya (Browser) yansıtır.
-    Açılış: DB'deki 09:55 Close barı
-    Kapanış: Yahoo'daki 1D Close barı
-    """
-    symbol = "ASELS.IS"
-    target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
-    
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # 1. Kapanışları Yahoo'dan çek (1D barları)
-        df_1d = yf.download(symbol, start="2026-02-18", end="2026-02-26", interval="1d", auto_adjust=False, progress=False)
-        if isinstance(df_1d.columns, pd.MultiIndex): 
-            df_1d.columns = df_1d.columns.get_level_values(0)
-        df_1d.index = pd.to_datetime(df_1d.index)
 
-        # 2. Açılışları Veritabanından çek (09:55 barları)
-        query_open = """
-            SELECT DATE(ts AT TIME ZONE 'Europe/Istanbul') as tr_date, close
-            FROM raw_minute_bars
-            WHERE symbol = %s 
-              AND (ts AT TIME ZONE 'Europe/Istanbul')::time = '09:55:00'
-              AND DATE(ts AT TIME ZONE 'Europe/Istanbul') IN %s;
-        """
-        cur.execute(query_open, (symbol, tuple(target_dates)))
-        db_opens = {str(row[0]): float(row[1]) for row in cur.fetchall()}
-        
-        cur.close()
-        conn.close()
-
-        # 3. Verileri Birleştir (Sadece Browser için liste oluştur)
-        final_results = []
-        for t_date in target_dates:
-            # DB'den açılış fiyatını al
-            official_open = db_opens.get(t_date, "DB'de Veri Yok")
-            
-            # Yahoo'dan kapanış fiyatını al
-            try:
-                official_close = float(df_1d.loc[df_1d.index == pd.to_datetime(t_date), 'Close'].iloc[0])
-            except:
-                official_close = "Yahoo'da Veri Yok"
-
-            final_results.append({
-                "tarih": t_date,
-                "resmi_acilis_0955_db": official_open,
-                "resmi_kapanis_1d_yahoo": official_close,
-                "durum": "OK" if isinstance(official_open, float) and isinstance(official_close, float) else "Eksik Veri"
-            })
-
-        return {
-            "symbol": symbol,
-            "mantik": "Acilis (DB 09:55 Close) + Kapanis (Yahoo 1D Close)",
-            "sonuclar": final_results
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/inspect-bars-comparison")
-def inspect_bars_comparison():
-    """
-    ASELS.IS için 18-24 Şubat arası, her günün saatlik bar sayılarını karşılaştırır.
-    """
-    symbol = "ASELS.IS"
-    target_dates = ["2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23", "2026-02-24"]
-    
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        # SQL: Gün ve Saat bazlı gruplama
-        query = """
-            SELECT 
-                DATE(ts AT TIME ZONE 'Europe/Istanbul') AS tr_date,
-                EXTRACT(HOUR FROM ts AT TIME ZONE 'Europe/Istanbul') AS bar_hour,
-                COUNT(*) AS bar_count
-            FROM raw_minute_bars
-            WHERE 
-                symbol = %s
-                AND DATE(ts AT TIME ZONE 'Europe/Istanbul') IN %s
-                AND (ts AT TIME ZONE 'Europe/Istanbul')::time >= '10:00:00'
-                AND (ts AT TIME ZONE 'Europe/Istanbul')::time <= '17:59:59'
-            GROUP BY tr_date, bar_hour
-            ORDER BY tr_date DESC, bar_hour ASC;
-        """
-        
-        cur.execute(query, (symbol, tuple(target_dates)))
-        rows = cur.fetchall()
-        
-        # Veriyi yapılandıralım: { "2026-02-24": { 10: 60, 11: 58 ... } }
-        comparison_table = {}
-        for row in rows:
-            d_str = str(row[0])
-            hour = int(row[1])
-            count = row[2]
-            
-            if d_str not in comparison_table:
-                comparison_table[d_str] = {}
-            comparison_table[d_str][hour] = count
-
-        cur.close()
-        conn.close()
-        
-        # Browser'da daha rahat okumak için listeye çeviriyoruz
-        final_list = []
-        for hour in range(10, 18):
-            hour_str = f"{hour:02d}:00 - {hour:02d}:59"
-            row_data = {"saat": hour_str}
-            for d in target_dates:
-                # O gün ve o saatte kaç bar var? Yoksa 0 yaz.
-                row_data[d] = comparison_table.get(d, {}).get(hour, 0)
-            final_list.append(row_data)
-
-        return {
-            "symbol": symbol,
-            "analiz_tipi": "Gunluk Karsilastirmali Bar Sayilari",
-            "not": "Her hucrede 60 rakami gorunmelidir.",
-            "data": final_list
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/schema/raw-minute-bars")
-def inspect_raw_minute_bars_schema():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        # Columns
-        cur.execute("""
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns
-            WHERE table_name = 'raw_minute_bars'
-            ORDER BY ordinal_position;
-        """)
-        columns = cur.fetchall()
-
-        # Primary Key
-        cur.execute("""
-            SELECT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-            WHERE tc.table_name = 'raw_minute_bars'
-              AND tc.constraint_type = 'PRIMARY KEY';
-        """)
-        pk = cur.fetchall()
-
-        # Constraints (CHECK dahil)
-        cur.execute("""
-            SELECT conname, pg_get_constraintdef(c.oid)
-            FROM pg_constraint c
-            JOIN pg_class t ON c.conrelid = t.oid
-            WHERE t.relname = 'raw_minute_bars';
-        """)
-        constraints = cur.fetchall()
-
-        # Indexler
-        cur.execute("""
-            SELECT indexname, indexdef
-            FROM pg_indexes
-            WHERE tablename = 'raw_minute_bars';
-        """)
-        indexes = cur.fetchall()
-
-        cur.close()
-        conn.close()
-
-        return {
-            "columns": columns,
-            "primary_key": pk,
-            "constraints": constraints,
-            "indexes": indexes
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/schema/daily-official")
-def inspect_daily_official_schema():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns
-            WHERE table_name = 'daily_official'
-            ORDER BY ordinal_position;
-        """)
-        columns = cur.fetchall()
-
-        cur.execute("""
-            SELECT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-            WHERE tc.table_name = 'daily_official'
-              AND tc.constraint_type = 'PRIMARY KEY';
-        """)
-        pk = cur.fetchall()
-
-        cur.execute("""
-            SELECT conname, pg_get_constraintdef(c.oid)
-            FROM pg_constraint c
-            JOIN pg_class t ON c.conrelid = t.oid
-            WHERE t.relname = 'daily_official';
-        """)
-        constraints = cur.fetchall()
-
-        cur.execute("""
-            SELECT indexname, indexdef
-            FROM pg_indexes
-            WHERE tablename = 'daily_official';
-        """)
-        indexes = cur.fetchall()
-
-        cur.close()
-        conn.close()
-
-        return {
-            "columns": columns,
-            "primary_key": pk,
-            "constraints": constraints,
-            "indexes": indexes
-        }
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+# -------------------------------------------------------
+# RAW TABLE INIT
+# -------------------------------------------------------
 
 @app.get("/init-raw-minute-bars-v2")
 def init_raw_minute_bars_v2():
-    """
-    raw_minute_bars tablosunu v2.0 LOCKED şemaya göre sıfırdan oluşturur.
-    UYARI: Mevcut tabloyu DROP eder.
-    """
     try:
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # 1️⃣ Drop eski tablo
         cur.execute("DROP TABLE IF EXISTS raw_minute_bars;")
 
-        # 2️⃣ Yeni tablo oluştur
         cur.execute("""
             CREATE TABLE raw_minute_bars (
                 symbol TEXT NOT NULL,
@@ -289,47 +62,181 @@ def init_raw_minute_bars_v2():
                 close NUMERIC(12,4) NOT NULL,
                 adj_close NUMERIC(12,4) NOT NULL,
                 volume BIGINT NOT NULL,
-
                 PRIMARY KEY (symbol, session_date, minute_index)
             );
         """)
 
-        # 3️⃣ Indexler
-        cur.execute("""
-            CREATE INDEX idx_rmb_session_date
-            ON raw_minute_bars(session_date);
-        """)
-
-        cur.execute("""
-            CREATE INDEX idx_rmb_symbol_session_date
-            ON raw_minute_bars(symbol, session_date);
-        """)
+        cur.execute("CREATE INDEX idx_rmb_session_date ON raw_minute_bars(session_date);")
+        cur.execute("CREATE INDEX idx_rmb_symbol_session_date ON raw_minute_bars(symbol, session_date);")
 
         conn.commit()
         cur.close()
         conn.close()
 
-        return {"status": "success", "message": "raw_minute_bars v2.0 initialized"}
+        return {"status": "success"}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 @app.get("/reset-daily-official")
 def reset_daily_official():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-
         cur.execute("TRUNCATE TABLE daily_official;")
-
         conn.commit()
         cur.close()
         conn.close()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
-        return {"status": "success", "message": "daily_official truncated"}
+
+# -------------------------------------------------------
+# PILOT INGEST
+# -------------------------------------------------------
+
+@app.get("/pilot-ingest-v2")
+def pilot_ingest_v2(start: str, end: str, ca_threshold: float):
+    if os.getenv("DATASET_LOCKED", "0") == "1":
+        return {"status": "blocked", "message": "dataset locked"}
+
+    try:
+        conn = get_db_connection()
+        conn.autocommit = False
+
+        start_date = datetime.strptime(start, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end, "%Y-%m-%d").date()
+
+        summary = []
+
+        for symbol in PILOT_SYMBOLS:
+
+            df_1m = yf.download(symbol, start=start, end=end, interval="1m", auto_adjust=False, progress=False)
+            if isinstance(df_1m.columns, pd.MultiIndex):
+                df_1m.columns = df_1m.columns.get_level_values(0)
+
+            if df_1m.empty:
+                summary.append({"symbol": symbol, "status": "no_data"})
+                continue
+
+            if df_1m.index.tz is None:
+                df_1m.index = df_1m.index.tz_localize("UTC")
+
+            df_1m = df_1m.tz_convert(TR_TZ)
+
+            df_1m = df_1m.between_time("10:00", "17:59")
+
+            df_1m["minute_index"] = ((df_1m.index.hour - 10) * 60 + df_1m.index.minute) + 1
+            df_1m["session_date"] = df_1m.index.date
+
+            df_1m = df_1m[(df_1m["minute_index"] >= 1) & (df_1m["minute_index"] <= 480)]
+
+            if "Adj Close" in df_1m.columns:
+                ratio = ((df_1m["Close"] - df_1m["Adj Close"]).abs() / df_1m["Close"]).max()
+                if ratio > ca_threshold:
+                    summary.append({"symbol": symbol, "status": "excluded_ca", "ratio": float(ratio)})
+                    continue
+
+            rows = []
+            df_utc = df_1m.tz_convert("UTC")
+
+            for i in range(len(df_utc)):
+                rows.append((
+                    symbol,
+                    df_utc.index[i].to_pydatetime(),
+                    df_1m["session_date"].iloc[i],
+                    int(df_1m["minute_index"].iloc[i]),
+                    float(df_1m["Open"].iloc[i]),
+                    float(df_1m["High"].iloc[i]),
+                    float(df_1m["Low"].iloc[i]),
+                    float(df_1m["Close"].iloc[i]),
+                    float(df_1m["Adj Close"].iloc[i]),
+                    int(df_1m["Volume"].iloc[i]) if pd.notna(df_1m["Volume"].iloc[i]) else 0
+                ))
+
+            insert_sql = """
+                INSERT INTO raw_minute_bars
+                (symbol, ts, session_date, minute_index, open, high, low, close, adj_close, volume)
+                VALUES %s
+                ON CONFLICT (symbol, session_date, minute_index) DO NOTHING;
+            """
+
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, insert_sql, rows, page_size=5000)
+
+            # Daily official
+            df_1d = yf.download(symbol, start=start, end=end, interval="1d", auto_adjust=False, progress=False)
+            if isinstance(df_1d.columns, pd.MultiIndex):
+                df_1d.columns = df_1d.columns.get_level_values(0)
+
+            daily_rows = []
+            for idx in df_1d.index:
+                d = pd.to_datetime(idx).date()
+                daily_rows.append((
+                    symbol,
+                    d,
+                    float(df_1d.loc[idx, "Open"]),
+                    float(df_1d.loc[idx, "Close"]),
+                    "yahoo",
+                    "yahoo",
+                    datetime.utcnow(),
+                    datetime.utcnow()
+                ))
+
+            daily_sql = """
+                INSERT INTO daily_official
+                (symbol, session_date, official_open, official_close, source_open, source_close, created_at, updated_at)
+                VALUES %s
+                ON CONFLICT (symbol, session_date)
+                DO UPDATE SET
+                    official_open = EXCLUDED.official_open,
+                    official_close = EXCLUDED.official_close,
+                    updated_at = EXCLUDED.updated_at;
+            """
+
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, daily_sql, daily_rows, page_size=1000)
+
+            summary.append({"symbol": symbol, "status": "ok", "bars": len(rows)})
+
+        conn.commit()
+        conn.close()
+
+        return {"status": "success", "summary": summary}
+
+    except Exception as e:
+        try:
+            conn.rollback()
+            conn.close()
+        except:
+            pass
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/data-health-report")
+def data_health_report():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT symbol, session_date, COUNT(*), MIN(minute_index), MAX(minute_index)
+            FROM raw_minute_bars
+            GROUP BY symbol, session_date
+            ORDER BY session_date DESC, symbol;
+        """)
+        stats = cur.fetchall()
+
+        cur.close()
+        conn.close()
+
+        return {"status": "ok", "raw_stats": stats}
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
