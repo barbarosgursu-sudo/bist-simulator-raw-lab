@@ -314,6 +314,23 @@ def init_raw_minute_bars_v2():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/reset-daily-official")
+def reset_daily_official():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("TRUNCATE TABLE daily_official;")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {"status": "success", "message": "daily_official truncated"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
